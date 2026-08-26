@@ -2,25 +2,34 @@ from pathlib import PosixPath
 from typing import Union, Optional
 
 from transformers import (
-    RobertaConfig,
-    RobertaTokenizerFast,
-    RobertaForMaskedLM,
-    RobertaForSequenceClassification,
     BertConfig,
     BertForMaskedLM,
-    BertForSequenceClassification
+    BertForSequenceClassification,
+    ModernBertConfig,
+    ModernBertForMaskedLM,
+    ModernBertForSequenceClassification,
+    PreTrainedTokenizerFast,
+    RobertaConfig,
+    RobertaForMaskedLM,
+    RobertaForSequenceClassification,
+    RobertaTokenizerFast,
 )
 
 from .models import (
-    RobertaMeanPoolConfig,
-    RobertaForSequenceClassificationMeanPool,
+    BertForSequenceClassificationMeanPool,
     BertMeanPoolConfig,
-    BertForSequenceClassificationMeanPool
+    ModernBertForSequenceClassificationMeanPool,
+    ModernBertMeanPoolConfig,
+    RobertaForSequenceClassificationMeanPool,
+    RobertaMeanPoolConfig,
 )
 from .nlp import DNABERTTokenizer
 
 
 RobertaSettings = dict(
+    padding_side='left'
+)
+ModernBertSettings = dict(
     padding_side='left'
 )
 DnabertSettings = dict(
@@ -34,6 +43,9 @@ MODELS = {
     "roberta-lm": (RobertaConfig, RobertaTokenizerFast, RobertaForMaskedLM, RobertaSettings),
     "roberta-pred": (RobertaConfig, RobertaTokenizerFast, RobertaForSequenceClassification, RobertaSettings),
     "roberta-pred-mean-pool": (RobertaMeanPoolConfig, RobertaTokenizerFast, RobertaForSequenceClassificationMeanPool, RobertaSettings),
+    "modernbert-lm": (ModernBertConfig, PreTrainedTokenizerFast, ModernBertForMaskedLM, ModernBertSettings),
+    "modernbert-pred": (ModernBertConfig, PreTrainedTokenizerFast, ModernBertForSequenceClassification, ModernBertSettings),
+    "modernbert-pred-mean-pool": (ModernBertMeanPoolConfig, PreTrainedTokenizerFast, ModernBertForSequenceClassificationMeanPool, ModernBertSettings),
     "dnabert-lm": (BertConfig, DNABERTTokenizer, BertForMaskedLM, DnabertSettings),
     "dnabert-pred": (BertConfig, DNABERTTokenizer, BertForSequenceClassification, DnabertSettings),
     "dnabert-pred-mean-pool": (BertMeanPoolConfig, DNABERTTokenizer, BertForSequenceClassificationMeanPool, DnabertSettings)
@@ -55,11 +67,15 @@ def load_model(model_name: str,
             - 'roberta-lm',
             - 'roberta-pred',
             - 'roberta-pred-mean-pool'
+            - 'modernbert-lm',
+            - 'modernbert-pred',
+            - 'modernbert-pred-mean-pool'
             - 'dnabert'
             - 'dnabert-pred'
             - 'dnabert-pred-mean-pool'
         tokenizer_dir (Union[str, PosixPath]): Directory containing tokenizer
-            files: merges.txt and vocab.txt
+            files: merges.txt and vocab.txt (RoBERTa) or a fast tokenizer
+            (tokenizer.json) directory (ModernBERT).
         max_len (int, optional): Maximum tokenized length,
             not including SOS and EOS. Defaults to 254.
         pretrained_model (Union[str, PosixPath], optional): path to saved
@@ -97,6 +113,10 @@ def load_model(model_name: str,
         output_hidden_states=True,
         **config_settings
     )
+    # ModernBERT auto-compiles layers with torch.compile when triton is
+    # available; disable it for predictable/simple behaviour in training runs.
+    if model_name.startswith("modernbert") and hasattr(config_obj, "reference_compile"):
+        config_obj.reference_compile = False
     if pretrained_model:
         print(f"Loading from pretrained model {pretrained_model}")
         model = model_class.from_pretrained(

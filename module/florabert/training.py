@@ -170,7 +170,9 @@ def make_param_groups(
     """
     # This is still kinda hacky
     model_name = type(model).__name__
-    if "Roberta" in model_name:
+    if "ModernBert" in model_name:
+        layers = model.model.layers
+    elif "Roberta" in model_name:
         layers = model.roberta.encoder.layer
     else:
         layers = model.bert.encoder.layer
@@ -250,7 +252,7 @@ def make_trainer(
     training_args = MyTrainingArguments(
         output_dir=str(output_dir),
         overwrite_output_dir=overwrite_output_dir,
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         # TODO: Figure out which setting for logging R2
         prediction_loss_only=False,
         load_best_model_at_end=True,
@@ -264,13 +266,20 @@ def make_trainer(
         assert (
             scheduler is not None
         ), "If optimizer is not None, a scheduler must be supplied"
-        num_devices = 1 if not torch.cuda.is_available() else torch.cuda.device_count()
+        # TPU v3-8 exposes 8 logical devices even though `torch.cuda` reports 0;
+        # fall back to the CUDA device count on GPU machines and 1 otherwise.
+        if os.environ.get("KAGGLE_TPU") or os.environ.get("TPU_NAME"):
+            num_devices = 8
+        else:
+            num_devices = (
+                1 if not torch.cuda.is_available() else torch.cuda.device_count()
+            )
         num_training_steps = np.floor(
             len(train_dataset)
             / training_kwargs["per_device_train_batch_size"]
             * training_kwargs["num_train_epochs"]
 #             / training_kwargs["gradient_accumulation_steps"]
-            / 2
+            / num_devices
         )
 
         def create_optimizer_and_scheduler(
@@ -366,14 +375,16 @@ def make_trainer(
             opt_kwargs=opt_kwargs,
             sched_kwargs=sched_kwargs,
         )
-#     def preprocess_logits_for_metrics(logits, labels):
-#         """
-#         Original Trainer may have a memory leak. 
-#         This is a workaround to avoid storing too many tensors that are not needed.
-#         """
-#         pred_ids = torch.argmax(logits[0], dim=-1)
-#         return pred_ids, labels
-    return optimizers
+
+    return Trainer(
+        model=model,
+        args=training_args,
+        data_collator=data_collator,
+        train_dataset=train_dataset,
+        eval_dataset=test_dataset,
+        optimizers=optimizers,
+        compute_metrics=compute_metrics,
+    )
 
 
 def do_training(trainer, args, output_dir):
@@ -381,7 +392,6 @@ def do_training(trainer, args, output_dir):
     Run HuggingFace trainer, loading latest checkpoint if `args.warmstart`
     is True.
     """
-    checkpoint_dir = "/kaggle/working/florabert/models/transformer/language-model/checkpoint-600/pytorch_model.bin"
     if args.warmstart:
         ckpt = get_latest_checkpoint(output_dir)
         print(f"Resuming training from {ckpt}")
@@ -411,7 +421,7 @@ class MyTrainingArguments(TrainingArguments):
     num_param_groups: int = field(default=2)
     evaluate_during_training: bool = field(default = True)
     param_group_size: int = field(default=None)
-    predict_with_generate: bool = field(default = True)
+    predict_with_generate: bool = field(default = False)
 
 
 class MyTrainer(Trainer):
