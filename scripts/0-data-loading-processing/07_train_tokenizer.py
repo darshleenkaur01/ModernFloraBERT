@@ -1,9 +1,13 @@
 """ Training byte-level BPE tokenizers for RoBERTa or ModernBERT base models.
 
-The corpus is read line-by-line from disk and trained incrementally in chunks
-(``tokenizer.train_from_iterator`` once per chunk), so the whole file is never
-loaded into RAM and each trainer's internal word-frequency table stays bounded
-(this avoids OOM on large corpora, e.g. millions of promoter sequences).
+Uses the file-based ``tokenizer.train(files=[...])`` API: the Rust engine
+streams the corpus from disk line-by-line, so Python-side RAM stays low.
+
+Memory caveat: the trainer's internal word-frequency map holds one entry per
+unique sequence. Because each DNA sequence is a single "word" under the
+ByteLevel pre-tokenizer (no whitespace), a very large corpus can exceed
+available RAM (e.g. ~8.5M sequences ~ 25-30 GB). If this OOMs, fall back to a
+sample (train on a smaller file) or the iterator-based path with a cap.
 """
 import argparse
 import sys
@@ -28,22 +32,6 @@ SPECIAL_TOKENS = {
 }
 
 
-def iter_chunks(path: Path, chunk_size: int):
-    """Yield non-empty lines of `path` in lists of up to `chunk_size`."""
-    chunk = []
-    with open(str(path), "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            chunk.append(line)
-            if len(chunk) >= chunk_size:
-                yield chunk
-                chunk = []
-    if chunk:
-        yield chunk
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Train a byte-level BPE tokenizer for RoBERTa or ModernBERT."
@@ -55,14 +43,6 @@ def main():
         help="Which special-token convention to use. 'modernbert' also saves the "
         "tokenizer as a fast-tokenizer directory (tokenizer.json) required by "
         "PreTrainedTokenizerFast (ModernBERT has no dedicated tokenizer class).",
-    )
-    parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=500_000,
-        help="Sequences per incremental train_from_iterator call. Keeps the "
-        "trainer's internal word-frequency table bounded (avoids OOM on large "
-        "corpora); merges accumulate across chunks.",
     )
     args = parser.parse_args()
 
@@ -87,23 +67,22 @@ def main():
             f"{sample_data.name} or {full_data.name}."
         )
     special_tokens = SPECIAL_TOKENS[args.model]
-    vocab_size = SETTINGS["vocab_size"] + len(special_tokens)
+    # The model config derives its vocab_size from len(tokenizer), so the
+    # trainer target equals the configured vocab_size (special tokens included).
+    vocab_size = SETTINGS["vocab_size"]
 
-    print(f"Training tokenizer ({args.model}), vocab_size={vocab_size}, "
-          f"chunk_size={args.chunk_size}")
+    print(f"Training tokenizer ({args.model}), vocab_size={vocab_size}")
     tokenizer = ByteLevelBPETokenizer()
 
-    # Incremental chunked training (mirrors the original florabert-2 approach):
-    # each train_from_iterator call builds a fresh internal trainer whose word
-    # table is freed after the call, so peak RAM stays bounded while the BPE
-    # merges accumulate in the tokenizer across chunks.
-    for i, chunk in enumerate(iter_chunks(TRAIN_DATA, args.chunk_size)):
-        tokenizer.train_from_iterator(
-            chunk,
-            vocab_size=vocab_size,
-            special_tokens=special_tokens,
-        )
-        print(f"chunk {i + 1} trained ({len(chunk)} sequences)")
+    # Direct file-based training: the Rust engine streams the file from disk,
+    # so Python RAM stays low (the trainer's word-frequency map is the only
+    # significant memory consumer -- see module docstring caveat).
+    tokenizer.train(
+        files=[str(TRAIN_DATA)],
+        vocab_size=vocab_size,
+        min_frequency=2,
+        special_tokens=special_tokens,
+    )
 
     if args.model == "modernbert":
         print("Saving ModernBERT fast tokenizer")
