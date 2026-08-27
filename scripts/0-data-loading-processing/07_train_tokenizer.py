@@ -1,13 +1,15 @@
 """ Training byte-level BPE tokenizers for RoBERTa or ModernBERT base models.
 
-Uses the file-based ``tokenizer.train(files=[...])`` API: the Rust engine
-streams the corpus from disk line-by-line, so Python-side RAM stays low.
+Memory model (important):
+The ``tokenizers`` trainer accumulates a word-frequency map for every sequence
+fed into a single ``train_from_iterator`` call. Because each DNA sequence is a
+single "word" under the ByteLevel pre-tokenizer (no whitespace), the map grows
+with the number of (mostly unique) sequences. Training on the full corpus
+(~8.5M sequences) exceeds Kaggle's ~30 GB RAM, so we train on a sub-sample.
 
-Memory caveat: the trainer's internal word-frequency map holds one entry per
-unique sequence. Because each DNA sequence is a single "word" under the
-ByteLevel pre-tokenizer (no whitespace), a very large corpus can exceed
-available RAM (e.g. ~8.5M sequences ~ 25-30 GB). If this OOMs, fall back to a
-sample (train on a smaller file) or the iterator-based path with a cap.
+By default we take 1/20 of the corpus (``total // 20``) -- the same volume the
+original florabert-2 20-iteration training effectively used per chunk. Override
+with ``--max-sequences``.
 """
 import argparse
 import sys
@@ -32,6 +34,40 @@ SPECIAL_TOKENS = {
 }
 
 
+def batch_iterator(path: Path, batch_size: int = 10_000, max_sequences: int = None):
+    """Yield non-empty lines of `path` in batches, lazily, up to `max_sequences`.
+
+    Batching avoids materialising the whole file in Python memory; the cap
+    bounds the trainer's internal word-frequency table (the actual RAM hog).
+    """
+    n = 0
+    with open(str(path), "r", encoding="utf-8") as f:
+        batch = []
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            batch.append(line)
+            n += 1
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
+            if max_sequences is not None and n >= max_sequences:
+                break
+        if batch:
+            yield batch
+
+
+def count_sequences(path: Path) -> int:
+    """Count non-empty lines without loading the file into memory."""
+    n = 0
+    with open(str(path), "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                n += 1
+    return n
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Train a byte-level BPE tokenizer for RoBERTa or ModernBERT."
@@ -43,6 +79,16 @@ def main():
         help="Which special-token convention to use. 'modernbert' also saves the "
         "tokenizer as a fast-tokenizer directory (tokenizer.json) required by "
         "PreTrainedTokenizerFast (ModernBERT has no dedicated tokenizer class).",
+    )
+    parser.add_argument(
+        "--max-sequences",
+        type=int,
+        default=None,
+        help="Maximum number of sequences fed to the trainer in a single "
+        "train_from_iterator call. The trainer keeps one entry per unique "
+        "sequence in memory, so this bounds peak RAM (roughly 3-4 GB per 1M "
+        "sequences). Default: total // 20 (mirrors the original 20-iteration "
+        "training chunk size).",
     )
     args = parser.parse_args()
 
@@ -71,16 +117,23 @@ def main():
     # trainer target equals the configured vocab_size (special tokens included).
     vocab_size = SETTINGS["vocab_size"]
 
-    print(f"Training tokenizer ({args.model}), vocab_size={vocab_size}")
+    max_sequences = args.max_sequences
+    if max_sequences is None:
+        total = count_sequences(TRAIN_DATA)
+        max_sequences = max(total // 20, 1)
+        print(f"NOTE: --max-sequences not set; defaulting to 1/20 of corpus "
+              f"({max_sequences:,} of {total:,} sequences) to match the original "
+              f"20-iteration training chunk size.")
+
+    print(f"Training tokenizer ({args.model}), vocab_size={vocab_size}, "
+          f"max_sequences={max_sequences}")
     tokenizer = ByteLevelBPETokenizer()
 
-    # Direct file-based training: the Rust engine streams the file from disk,
-    # so Python RAM stays low (the trainer's word-frequency map is the only
-    # significant memory consumer -- see module docstring caveat).
-    tokenizer.train(
-        files=[str(TRAIN_DATA)],
+    # Single call over a capped, lazy batch iterator: the trainer accumulates a
+    # word map for everything it sees, so the cap is what keeps RAM bounded.
+    tokenizer.train_from_iterator(
+        iterator=batch_iterator(TRAIN_DATA, max_sequences=max_sequences),
         vocab_size=vocab_size,
-        min_frequency=2,
         special_tokens=special_tokens,
     )
 
