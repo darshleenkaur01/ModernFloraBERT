@@ -8,7 +8,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from tokenizers import ByteLevelBPETokenizer, pre_tokenizers, trainers
+from tokenizers import ByteLevelBPETokenizer
 from transformers import PreTrainedTokenizerFast
 
 # Make `module` importable when run as `python scripts/0-data-loading-processing/07_train_tokenizer.py`
@@ -89,17 +89,15 @@ def main():
           f"max_examples={args.max_examples}")
     tokenizer = ByteLevelBPETokenizer()
 
-    # Explicit byte-level BPE trainer (matches what ByteLevelBPETokenizer.train
-    # uses), so we can drive it from a streaming iterator.
-    trainer = trainers.BpeTrainer(
+    # ByteLevelBPETokenizer.train_from_iterator (tokenizers 0.22.x) takes the BPE
+    # hyper-params directly and builds the trainer internally, seeding the vocab
+    # with the full 256-byte alphabet. The streaming iterator keeps RAM bounded.
+    tokenizer.train_from_iterator(
+        iter_lines(TRAIN_DATA, max_examples=args.max_examples),
         vocab_size=vocab_size,
         min_frequency=2,
         show_progress=True,
         special_tokens=special_tokens,
-        initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
-    )
-    tokenizer.train_from_iterator(
-        iter_lines(TRAIN_DATA, max_examples=args.max_examples), trainer=trainer
     )
 
     if args.model == "modernbert":
