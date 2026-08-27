@@ -8,7 +8,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from tokenizers import ByteLevel, ByteLevelBPETokenizer, trainers
+from tokenizers import ByteLevelBPETokenizer, pre_tokenizers, trainers
 from transformers import PreTrainedTokenizerFast
 
 # Make `module` importable when run as `python scripts/0-data-loading-processing/07_train_tokenizer.py`
@@ -96,7 +96,7 @@ def main():
         min_frequency=2,
         show_progress=True,
         special_tokens=special_tokens,
-        initial_alphabet=ByteLevel.alphabet(),
+        initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
     )
     tokenizer.train_from_iterator(
         iter_lines(TRAIN_DATA, max_examples=args.max_examples), trainer=trainer
