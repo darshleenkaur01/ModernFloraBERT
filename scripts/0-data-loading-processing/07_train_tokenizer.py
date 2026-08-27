@@ -1,7 +1,8 @@
 """ Training byte-level BPE tokenizers for RoBERTa or ModernBERT base models.
 
-The corpus is streamed line-by-line from disk and fed to
-``tokenizer.train_from_iterator`` so the entire file is never loaded into RAM
+The corpus is read line-by-line from disk and trained incrementally in chunks
+(``tokenizer.train_from_iterator`` once per chunk), so the whole file is never
+loaded into RAM and each trainer's internal word-frequency table stays bounded
 (this avoids OOM on large corpora, e.g. millions of promoter sequences).
 """
 import argparse
@@ -27,18 +28,20 @@ SPECIAL_TOKENS = {
 }
 
 
-def iter_lines(path: Path, max_examples: int = None):
-    """Lazily yield non-empty lines from `path`, optionally capping the count."""
-    n = 0
+def iter_chunks(path: Path, chunk_size: int):
+    """Yield non-empty lines of `path` in lists of up to `chunk_size`."""
+    chunk = []
     with open(str(path), "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            yield line
-            n += 1
-            if max_examples is not None and n >= max_examples:
-                return
+            chunk.append(line)
+            if len(chunk) >= chunk_size:
+                yield chunk
+                chunk = []
+    if chunk:
+        yield chunk
 
 
 def main():
@@ -54,11 +57,12 @@ def main():
         "PreTrainedTokenizerFast (ModernBERT has no dedicated tokenizer class).",
     )
     parser.add_argument(
-        "--max-examples",
+        "--chunk-size",
         type=int,
-        default=None,
-        help="Cap the number of sequences used for training (None = use all). "
-        "Useful to speed up tokenizer training on very large corpora.",
+        default=500_000,
+        help="Sequences per incremental train_from_iterator call. Keeps the "
+        "trainer's internal word-frequency table bounded (avoids OOM on large "
+        "corpora); merges accumulate across chunks.",
     )
     args = parser.parse_args()
 
@@ -86,19 +90,20 @@ def main():
     vocab_size = SETTINGS["vocab_size"] + len(special_tokens)
 
     print(f"Training tokenizer ({args.model}), vocab_size={vocab_size}, "
-          f"max_examples={args.max_examples}")
+          f"chunk_size={args.chunk_size}")
     tokenizer = ByteLevelBPETokenizer()
 
-    # ByteLevelBPETokenizer.train_from_iterator (tokenizers 0.22.x) takes the BPE
-    # hyper-params directly and builds the trainer internally, seeding the vocab
-    # with the full 256-byte alphabet. The streaming iterator keeps RAM bounded.
-    tokenizer.train_from_iterator(
-        iter_lines(TRAIN_DATA, max_examples=args.max_examples),
-        vocab_size=vocab_size,
-        min_frequency=2,
-        show_progress=True,
-        special_tokens=special_tokens,
-    )
+    # Incremental chunked training (mirrors the original florabert-2 approach):
+    # each train_from_iterator call builds a fresh internal trainer whose word
+    # table is freed after the call, so peak RAM stays bounded while the BPE
+    # merges accumulate in the tokenizer across chunks.
+    for i, chunk in enumerate(iter_chunks(TRAIN_DATA, args.chunk_size)):
+        tokenizer.train_from_iterator(
+            chunk,
+            vocab_size=vocab_size,
+            special_tokens=special_tokens,
+        )
+        print(f"chunk {i + 1} trained ({len(chunk)} sequences)")
 
     if args.model == "modernbert":
         print("Saving ModernBERT fast tokenizer")
