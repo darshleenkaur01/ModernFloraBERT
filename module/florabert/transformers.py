@@ -105,6 +105,11 @@ def load_model(model_name: str,
         kwargs.update(dict(padding_side=padding_side))
 
     tokenizer = tokenizer_class.from_pretrained(str(tokenizer_dir), **kwargs)
+    # Cap model_max_length to the model's positional limit. Without this, a
+    # bare PreTrainedTokenizerFast (ModernBERT) keeps transformers' default
+    # int(1e30) sentinel, which overflows the Rust tokenizer's
+    # enable_truncation -> "OverflowError: int too big to convert".
+    tokenizer.model_max_length = max_position_embeddings
     name_or_path = str(pretrained_model) or ''
     config_obj = config_class(
         vocab_size=len(tokenizer),

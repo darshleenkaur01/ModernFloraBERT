@@ -152,6 +152,14 @@ def main():
             pad_token="[PAD]",
             mask_token="[MASK]",
         )
+        # Persist a real model_max_length so tokenizer_config.json doesn't carry
+        # transformers' int(1e30) sentinel (which crashes enable_truncation with
+        # "OverflowError: int too big to convert" when max_length is taken from
+        # tokenizer.model_max_length).
+        max_tokenized_len = config.settings["models"]["modernbert-base"].get(
+            "max_tokenized_len", 256
+        )
+        fast_tokenizer.model_max_length = max_tokenized_len + 2
         fast_tokenizer.save_pretrained(str(TOKENIZER_DIR))
     else:
         print("Saving tokenizer")
