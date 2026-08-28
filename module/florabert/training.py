@@ -254,7 +254,11 @@ def make_trainer(
         overwrite_output_dir=overwrite_output_dir,
         eval_strategy="steps",
         # TODO: Figure out which setting for logging R2
-        prediction_loss_only=False,
+        # Skip accumulating eval logits on GPU when no custom metrics are
+        # requested (e.g. MLM pretrain). Accumulating full (batch, seq_len,
+        # vocab_size) logits across the eval set OOMs the GPU; with
+        # prediction_loss_only=True the eval loop returns loss only.
+        prediction_loss_only=not bool(metrics),
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         do_eval=True,
