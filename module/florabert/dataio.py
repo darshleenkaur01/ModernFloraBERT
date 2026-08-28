@@ -6,7 +6,6 @@ import itertools
 import multiprocessing as mp
 import os
 import random
-import shutil
 import time
 from pathlib import PosixPath
 from typing import Callable, Dict, List, Optional, Tuple, Union
@@ -14,7 +13,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 from Bio import Seq, SeqIO
-from datasets import load_dataset, load_from_disk
+from datasets import load_dataset
 from sklearn.base import BaseEstimator
 from torch.utils.data import Dataset
 from tqdm import tqdm
@@ -153,7 +152,7 @@ def _is_distributed_main_worker() -> bool:
     return int(local_rank) == 0
 
 
-def _tokenized_cache_dir(
+def _tokenize_marker_dir(
     tokenizer: PreTrainedTokenizer,
     seq_key: str,
     nshards: int,
@@ -163,12 +162,11 @@ def _tokenized_cache_dir(
     position_buckets: Tuple[int],
     data_files: Dict[str, str],
 ) -> PosixPath:
-    """Deterministic on-disk location for a tokenized dataset.
+    """Location of a tiny marker used to serialize tokenization across ranks.
 
-    Keyed by the tokenizer identity, tokenization settings and source files so a
-    valid cache is only reused when it is guaranteed to match. Placed under
-    `data/final/transformer/tokenized-cache/` so it can be uploaded to the Kaggle
-    dataset and reused across sessions.
+    Only a small `_DONE` file is stored here (never the dataset), so the main
+    worker's tokenization is done before other distributed workers reuse its
+    HuggingFace map cache.
     """
     name = getattr(tokenizer, "name_or_path", None) or type(tokenizer).__name__
     tag = str(PosixPath(name).stem) if name else "tokenizer"
@@ -177,10 +175,6 @@ def _tokenized_cache_dir(
         f"{tag}|{tokenizer.model_max_length}|{seq_key}|{nshards}|{min_seq_len}|{filter_empty}|{kmer}|{position_buckets}|{source}".encode()
     ).hexdigest()[:12]
     return config.data_final / "transformer" / "tokenized-cache" / f"{tag}-{digest}"
-
-
-def _cache_complete(cache_dir: PosixPath) -> bool:
-    return (cache_dir / "_COMPLETE").exists()
 
 
 def load_datasets(
@@ -275,40 +269,28 @@ def load_datasets(
         )
         datasets = datasets.map(kmer_flip, batched=True, num_proc=n_workers)
 
-    # Tokenizing. Results are cached on disk and reused so repeated runs (and
-    # every torchrun rank) skip the expensive map. Only the main worker builds
-    # the cache; other distributed workers wait for it and then load it, which
-    # avoids duplicate compute and concurrent-cache races.
+    # Tokenizing. Only the main worker runs the (slow) map; other torchrun ranks
+    # wait for its `_DONE` marker and then reuse the HuggingFace map cache the
+    # main worker already wrote. This avoids duplicate tokenization (both ranks
+    # competing for the same CPUs) without persisting a separate dataset copy.
     preprocess_fn = make_preprocess_function(tokenizer, seq_key=seq_key)
-    cache_dir = _tokenized_cache_dir(
+    marker_dir = _tokenize_marker_dir(
         tokenizer, seq_key, nshards, min_seq_len, filter_empty, kmer, position_buckets, data_files
     )
-    if _cache_complete(cache_dir):
-        print(f"Loading cached tokenized dataset from {cache_dir}")
-        datasets = load_from_disk(str(cache_dir))
-    elif _is_distributed_main_worker():
+    if _is_distributed_main_worker():
         print("Tokenizing")
-        # load_from_cache_file=False avoids a second (redundant) HF cache write;
-        # we persist the result ourselves via save_to_disk below.
-        datasets = datasets.map(
-            preprocess_fn,
-            batched=True,
-            num_proc=n_workers,
-            load_from_cache_file=False,
-        )
+        datasets = datasets.map(preprocess_fn, batched=True, num_proc=n_workers)
         if filter_empty:
             datasets = datasets.filter(filter_empty_sequence)
-        if cache_dir.exists():
-            shutil.rmtree(cache_dir)
-        cache_dir.parent.mkdir(parents=True, exist_ok=True)
-        print(f"Saving tokenized dataset cache to {cache_dir}")
-        datasets.save_to_disk(str(cache_dir))
-        (cache_dir / "_COMPLETE").touch()
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / "_DONE").touch()
     else:
-        while not _cache_complete(cache_dir):
+        while not (marker_dir / "_DONE").exists():
             time.sleep(10)
-        print(f"Loading cached tokenized dataset from {cache_dir}")
-        datasets = load_from_disk(str(cache_dir))
+        print("Reusing tokenized dataset from main worker's map cache")
+        datasets = datasets.map(preprocess_fn, batched=True, num_proc=n_workers)
+        if filter_empty:
+            datasets = datasets.filter(filter_empty_sequence)
 
     if file_type != "text":
         datasets = datasets.map(
