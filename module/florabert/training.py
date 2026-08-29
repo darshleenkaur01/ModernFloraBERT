@@ -278,12 +278,16 @@ def make_trainer(
             num_devices = (
                 1 if not torch.cuda.is_available() else torch.cuda.device_count()
             )
-        num_training_steps = np.floor(
-            len(train_dataset)
-            / training_kwargs["per_device_train_batch_size"]
-            * training_kwargs["num_train_epochs"]
-#             / training_kwargs["gradient_accumulation_steps"]
-            / num_devices
+        num_training_steps = int(
+            np.ceil(
+                len(train_dataset)
+                / (
+                    training_kwargs["per_device_train_batch_size"]
+                    * training_kwargs.get("gradient_accumulation_steps", 1)
+                    * num_devices
+                )
+                * training_kwargs["num_train_epochs"]
+            )
         )
 
         def create_optimizer_and_scheduler(
