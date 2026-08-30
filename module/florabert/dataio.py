@@ -278,6 +278,7 @@ def load_datasets(
         tokenizer, seq_key, nshards, min_seq_len, filter_empty, kmer, position_buckets, data_files
     )
     if _is_distributed_main_worker():
+        (marker_dir / "_DONE").unlink(missing_ok=True)
         print("Tokenizing")
         datasets = datasets.map(preprocess_fn, batched=True, num_proc=n_workers)
         if filter_empty:
@@ -291,6 +292,7 @@ def load_datasets(
         datasets = datasets.map(preprocess_fn, batched=True, num_proc=n_workers)
         if filter_empty:
             datasets = datasets.filter(filter_empty_sequence)
+        (marker_dir / "_DONE").unlink(missing_ok=True)
 
     if file_type != "text":
         datasets = datasets.map(
