@@ -432,7 +432,7 @@ class BertForSequenceClassificationMeanPool(BertPreTrainedModel):
                 loss = loss_fct(logits.view(-1), labels.view(-1))
             else:
                 loss_fct = BCELoss()
-                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+        loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
 
         if not return_dict:
             output = (logits,) + outputs[2:]
@@ -569,7 +569,7 @@ class ModernBertForSequenceClassificationMeanPool(ModernBertPreTrainedModel):
             elif self.output_mode == "poisson":
                 loss_fct = PoissonNLLLoss()
 
-            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+        loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
 
         if not return_dict:
             output = (logits,) + outputs[2:]

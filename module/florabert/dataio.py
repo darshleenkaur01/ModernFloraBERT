@@ -279,19 +279,29 @@ def load_datasets(
     )
     if _is_distributed_main_worker():
         (marker_dir / "_DONE").unlink(missing_ok=True)
-        print("Tokenizing")
+        t0 = time.time()
+        print(
+            f"[tokenize] local_rank={os.environ.get('LOCAL_RANK')} n_workers={n_workers} "
+            f"splits={ {k: len(v) for k, v in datasets.items()} }"
+        )
         datasets = datasets.map(preprocess_fn, batched=True, num_proc=n_workers)
         if filter_empty:
             datasets = datasets.filter(filter_empty_sequence)
+        print(f"[tokenize] rank 0: tokenization done in {time.time() - t0:.1f}s")
         marker_dir.mkdir(parents=True, exist_ok=True)
         (marker_dir / "_DONE").touch()
     else:
+        print(
+            f"[tokenize] local_rank={os.environ.get('LOCAL_RANK')} waiting for {marker_dir / '_DONE'}"
+        )
         while not (marker_dir / "_DONE").exists():
             time.sleep(10)
+        t0 = time.time()
         print("Reusing tokenized dataset from main worker's map cache")
         datasets = datasets.map(preprocess_fn, batched=True, num_proc=n_workers)
         if filter_empty:
             datasets = datasets.filter(filter_empty_sequence)
+        print(f"[tokenize] rank>0: cache reuse done in {time.time() - t0:.1f}s")
         (marker_dir / "_DONE").unlink(missing_ok=True)
 
     if file_type != "text":
