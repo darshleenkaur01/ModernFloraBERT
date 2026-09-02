@@ -74,11 +74,11 @@ class ClassificationHeadMeanPool(nn.Module):
         return x
 
     def embed(self, features, attention_mask=None, input_ids=None, **kwargs):
-        attention_mask[input_ids == self.start_token_idx] = 0
-        attention_mask[input_ids == self.end_token_idx] = 0
-        x = torch.sum(features * attention_mask.unsqueeze(2), dim=1) / torch.sum(
-            attention_mask, dim=1, keepdim=True
-        )  # Mean pooling over non-padding tokens
+        mask = attention_mask.clone()
+        mask[input_ids == self.start_token_idx] = 0
+        mask[input_ids == self.end_token_idx] = 0
+        denom = torch.sum(mask, dim=1, keepdim=True).clamp(min=1)
+        x = torch.sum(features * mask.unsqueeze(2), dim=1) / denom
 
         x = self.dropout(x)
         x = self.dense(x)
@@ -432,7 +432,7 @@ class BertForSequenceClassificationMeanPool(BertPreTrainedModel):
                 loss = loss_fct(logits.view(-1), labels.view(-1))
             else:
                 loss_fct = BCELoss()
-        loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
 
         if not return_dict:
             output = (logits,) + outputs[2:]
@@ -569,7 +569,7 @@ class ModernBertForSequenceClassificationMeanPool(ModernBertPreTrainedModel):
             elif self.output_mode == "poisson":
                 loss_fct = PoissonNLLLoss()
 
-        loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
+            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
 
         if not return_dict:
             output = (logits,) + outputs[2:]
