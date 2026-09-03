@@ -56,6 +56,9 @@ def _diagnose_finetune(model, datasets, dataset_train, device):
     n_nan = sum(int(torch.isnan(p).sum()) for p in model.parameters())
     n_inf = sum(int(torch.isinf(p).sum()) for p in model.parameters())
     print(f"[diag] model params: NaN={n_nan} Inf={n_inf}")
+    for name, p in model.named_parameters():
+        if torch.isnan(p).any() or torch.isinf(p).any():
+            print(f"[diag] non-finite param: {name} shape={tuple(p.shape)}")
 
     for split in ("train", "eval", "test"):
         try:
@@ -71,19 +74,31 @@ def _diagnose_finetune(model, datasets, dataset_train, device):
     collator = dataio.load_data_collator("pred")
     sample = dataset_train.select(range(8))
     dl = DataLoader(sample, batch_size=8, collate_fn=collator)
+    keep = ("input_ids", "attention_mask", "labels", "position_ids")
     model.eval()
     with torch.no_grad():
         batch = next(iter(dl))
-        batch = {k: v.to(device) for k, v in batch.items()}
+        batch = {k: v.to(device) for k, v in batch.items() if k in keep}
         out = model(**batch)
-    logits = out.logits if hasattr(out, "logits") else out[0]
-    print(
-        f"[diag] first batch logits: shape={tuple(logits.shape)} "
-        f"min={float(logits.min())} max={float(logits.max())} "
-        f"NaN={int(torch.isnan(logits).sum())} Inf={int(torch.isinf(logits).sum())}"
-    )
-    if out.loss is not None:
-        print(f"[diag] first batch loss={float(out.loss)} NaN={bool(torch.isnan(out.loss))}")
+        logits = out.logits if hasattr(out, "logits") else out[0]
+        print(
+            f"[diag] fp32 first batch logits: shape={tuple(logits.shape)} "
+            f"min={float(logits.min())} max={float(logits.max())} "
+            f"NaN={int(torch.isnan(logits).sum())} Inf={int(torch.isinf(logits).sum())}"
+        )
+        if out.loss is not None:
+            print(f"[diag] fp32 first batch loss={float(out.loss)} NaN={bool(torch.isnan(out.loss))}")
+
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            out = model(**batch)
+        logits = out.logits if hasattr(out, "logits") else out[0]
+        print(
+            f"[diag] fp16 first batch logits: shape={tuple(logits.shape)} "
+            f"min={float(logits.min())} max={float(logits.max())} "
+            f"NaN={int(torch.isnan(logits).sum())} Inf={int(torch.isinf(logits).sum())}"
+        )
+        if out.loss is not None:
+            print(f"[diag] fp16 first batch loss={float(out.loss)} NaN={bool(torch.isnan(out.loss))}")
 
 
 def main():
