@@ -46,7 +46,6 @@ training:
         per_device_eval_batch_size: 8
         fp16: true
         fp16_full_eval: true
-        eval_accumulation_steps: 1
         logging_steps: 50
         eval_steps: 300
         save_steps: 300

@@ -1,6 +1,9 @@
 from pathlib import PosixPath
 from typing import Union, Optional
 
+import torch
+from torch import nn
+
 from transformers import (
     BertConfig,
     BertForMaskedLM,
@@ -124,8 +127,19 @@ def load_model(model_name: str,
         config_obj.reference_compile = False
     if pretrained_model:
         print(f"Loading from pretrained model {pretrained_model}")
+        # `_fast_init=False` forces `post_init` to properly initialize weights
+        # whose keys are absent from the checkpoint. With the default fast-init
+        # path, missing keys (e.g. the classification head loaded on top of a
+        # language-model checkpoint) are left as `torch.empty` uninitialized
+        # memory, producing NaN/huge weights (HF issue #35437).
         model = model_class.from_pretrained(
-            str(pretrained_model), config=config_obj)
+            str(pretrained_model), config=config_obj, _fast_init=False)
+        # Belt-and-suspenders: guarantee the task head is finite regardless of
+        # the fast-init path used above.
+        if hasattr(model, "classifier"):
+            for module in model.classifier.modules():
+                if isinstance(module, nn.Linear):
+                    module.reset_parameters()
     else:
         print("Loading untrained model")
         model = model_class(config=config_obj)
