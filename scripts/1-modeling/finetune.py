@@ -49,6 +49,43 @@ def get_device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _diagnose_finetune(model, datasets, dataset_train, device):
+    """Print NaN/inf stats to pinpoint the ModernBERT loss=0/NaN-grad source."""
+    from torch.utils.data import DataLoader
+
+    n_nan = sum(int(torch.isnan(p).sum()) for p in model.parameters())
+    n_inf = sum(int(torch.isinf(p).sum()) for p in model.parameters())
+    print(f"[diag] model params: NaN={n_nan} Inf={n_inf}")
+
+    for split in ("train", "eval", "test"):
+        try:
+            labels = np.asarray(datasets[split]["labels"], dtype=np.float64)
+            print(
+                f"[diag] {split} labels: shape={labels.shape} "
+                f"min={np.nanmin(labels):.4f} max={np.nanmax(labels):.4f} "
+                f"NaN={int(np.isnan(labels).sum())} Inf={int(np.isinf(labels).sum())}"
+            )
+        except Exception as e:
+            print(f"[diag] {split} labels: could not inspect ({type(e).__name__}: {e})")
+
+    collator = dataio.load_data_collator("pred")
+    sample = dataset_train.select(range(8))
+    dl = DataLoader(sample, batch_size=8, collate_fn=collator)
+    model.eval()
+    with torch.no_grad():
+        batch = next(iter(dl))
+        batch = {k: v.to(device) for k, v in batch.items()}
+        out = model(**batch)
+    logits = out.logits if hasattr(out, "logits") else out[0]
+    print(
+        f"[diag] first batch logits: shape={tuple(logits.shape)} "
+        f"min={float(logits.min())} max={float(logits.max())} "
+        f"NaN={int(torch.isnan(logits).sum())} Inf={int(torch.isinf(logits).sum())}"
+    )
+    if out.loss is not None:
+        print(f"[diag] first batch loss={float(out.loss)} NaN={bool(torch.isnan(out.loss))}")
+
+
 def main():
     args = utils.get_args(
         data_dir=DATA_DIR,
@@ -113,6 +150,8 @@ def main():
     dataset_eval = datasets["eval"].remove_columns(["sequence"])
     dataset_test = datasets["test"].remove_columns(["sequence"])
     print(f"Loaded training data with {len(dataset_train)} examples")
+
+    _diagnose_finetune(model, datasets, dataset_train, device)
 
     data_collator = dataio.load_data_collator("pred")
     training_settings = config.settings["training"]["finetune"]
