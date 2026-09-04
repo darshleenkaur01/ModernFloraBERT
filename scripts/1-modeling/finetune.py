@@ -16,6 +16,8 @@ from torch.utils.data import DataLoader
 from accelerate import Accelerator
 from tqdm.auto import tqdm
 
+import wandb
+
 from module.florabert import config, utils, training, dataio
 from module.florabert import transformers as tr
 from module.florabert.utils import compute_r2, compute_mse
@@ -145,10 +147,27 @@ def main():
         train_dataloader, eval_dataloader, model, optimizer, scheduler
     )
 
+    if accelerator.is_main_process:
+        wandb.init(
+            project=os.environ.get("WANDB_PROJECT", "florabert"),
+            config={
+                "model_name": args.model_name,
+                "transformation": args.transformation,
+                "train_size": len(dataset_train),
+                "eval_size": len(dataset_eval),
+                "num_trainable_params": num_params,
+                **training_settings,
+            },
+        )
+
     progress_bar = tqdm(
         range(num_training_steps),
         disable=not accelerator.is_local_main_process,
     )
+    steps_per_epoch = num_training_steps // num_epochs
+    logging_steps = int(training_settings.get("logging_steps", 50))
+    global_step = 0
+    running_loss = 0.0
     accelerator.print("Starting training")
     for epoch in range(num_epochs):
         model.train()
@@ -158,13 +177,30 @@ def main():
             outputs = model(**inputs)
             loss = outputs.loss
             accelerator.backward(loss)
+            grad_norm = None
             if "max_grad_norm" in training_settings:
-                accelerator.clip_grad_norm_(
+                grad_norm = accelerator.clip_grad_norm_(
                     model.parameters(), training_settings["max_grad_norm"]
-                )
+                ).item()
             optimizer.step()
             scheduler.step()
             progress_bar.update(1)
+
+            running_loss += loss.detach().float().item()
+            global_step += 1
+            if global_step % logging_steps == 0:
+                lr = scheduler.get_last_lr()[0]
+                if accelerator.is_main_process:
+                    log = {
+                        "epoch": epoch + (global_step % steps_per_epoch) / steps_per_epoch,
+                        "loss": running_loss / logging_steps,
+                        "learning_rate": lr,
+                        "step": global_step,
+                    }
+                    if grad_norm is not None:
+                        log["grad_norm"] = grad_norm
+                    wandb.log(log)
+                running_loss = 0.0
 
         model.eval()
         all_predictions = []
@@ -183,6 +219,14 @@ def main():
         eval_mse = compute_mse(all_labels, all_predictions)
         eval_r2 = compute_r2(all_labels, all_predictions)
         accelerator.print(f"epoch {epoch}: eval mse={eval_mse:.4f} r2={eval_r2:.4f}")
+        if accelerator.is_main_process:
+            wandb.log(
+                {
+                    "epoch": epoch + 1,
+                    "eval/mse": float(eval_mse),
+                    "eval/r2": float(eval_r2),
+                }
+            )
 
         unwrapped_model = accelerator.unwrap_model(model)
         unwrapped_model.save_pretrained(
@@ -198,6 +242,9 @@ def main():
         is_main_process=accelerator.is_main_process,
         save_function=accelerator.save,
     )
+
+    if accelerator.is_main_process:
+        wandb.finish()
 
 
 if __name__ == "__main__":
