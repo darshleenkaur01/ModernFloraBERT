@@ -108,11 +108,21 @@ def load_model(model_name: str,
         kwargs.update(dict(padding_side=padding_side))
 
     tokenizer = tokenizer_class.from_pretrained(str(tokenizer_dir), **kwargs)
-    # Cap model_max_length to the model's positional limit. Without this, a
-    # bare PreTrainedTokenizerFast (ModernBERT) keeps transformers' default
-    # int(1e30) sentinel, which overflows the Rust tokenizer's
+    # Cap model_max_length so tokenized sequences fit inside the model's
+    # positional capacity. For a bare PreTrainedTokenizerFast (ModernBERT) the
+    # transformers' default int(1e30) sentinel overflows the Rust tokenizer's
     # enable_truncation -> "OverflowError: int too big to convert".
-    tokenizer.model_max_length = max_position_embeddings
+    # RoBERTa/BERT use a *learned* position embedding and RoBERTa's position ids
+    # run up to `num_non_pad_tokens + 1`, so padding to `max_position_embeddings`
+    # (258) yields position ids 258/259 -> out-of-bounds gather in
+    # `vectorized_gather_kernel`. Cap those at `max_tokenized_len` (256) so the
+    # largest position id (257) stays within the 258-slot embedding.
+    # ModernBERT uses rotary (no position-embedding gather) and is unaffected;
+    # keep it at the full `max_position_embeddings` so nothing changes for it.
+    if model_name.startswith("modernbert"):
+        tokenizer.model_max_length = max_position_embeddings
+    else:
+        tokenizer.model_max_length = max_tokenized_len
     name_or_path = str(pretrained_model) or ''
     config_obj = config_class(
         vocab_size=len(tokenizer),
