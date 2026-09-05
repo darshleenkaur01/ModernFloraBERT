@@ -108,17 +108,9 @@ def load_model(model_name: str,
         kwargs.update(dict(padding_side=padding_side))
 
     tokenizer = tokenizer_class.from_pretrained(str(tokenizer_dir), **kwargs)
-    # Cap model_max_length so tokenized sequences fit inside the model's
-    # positional capacity. For a bare PreTrainedTokenizerFast (ModernBERT) the
-    # transformers' default int(1e30) sentinel overflows the Rust tokenizer's
-    # enable_truncation -> "OverflowError: int too big to convert".
-    # RoBERTa/BERT use a *learned* position embedding and RoBERTa's position ids
-    # run up to `num_non_pad_tokens + 1`, so padding to `max_position_embeddings`
-    # (258) yields position ids 258/259 -> out-of-bounds gather in
-    # `vectorized_gather_kernel`. Cap those at `max_tokenized_len` (256) so the
-    # largest position id (257) stays within the 258-slot embedding.
-    # ModernBERT uses rotary (no position-embedding gather) and is unaffected;
-    # keep it at the full `max_position_embeddings` so nothing changes for it.
+    # Cap model_max_length: ModernBERT needs it to avoid int(1e30) overflow;
+    # RoBERTa/BERT need it to avoid OOB position-embedding gather (position ids
+    # can reach num_tokens+1, which overflows max_position_embeddings).
     if model_name.startswith("modernbert"):
         tokenizer.model_max_length = max_position_embeddings
     else:
@@ -131,21 +123,12 @@ def load_model(model_name: str,
         output_hidden_states=True,
         **config_settings
     )
-    # ModernBERT auto-compiles layers with torch.compile when triton is
-    # available; disable it for predictable/simple behaviour in training runs.
     if model_name.startswith("modernbert") and hasattr(config_obj, "reference_compile"):
         config_obj.reference_compile = False
     if pretrained_model:
         print(f"Loading from pretrained model {pretrained_model}")
-        # `_fast_init=False` forces `post_init` to properly initialize weights
-        # whose keys are absent from the checkpoint. With the default fast-init
-        # path, missing keys (e.g. the classification head loaded on top of a
-        # language-model checkpoint) are left as `torch.empty` uninitialized
-        # memory, producing NaN/huge weights (HF issue #35437).
         model = model_class.from_pretrained(
             str(pretrained_model), config=config_obj, _fast_init=False)
-        # Belt-and-suspenders: guarantee the task head is finite regardless of
-        # the fast-init path used above.
         if hasattr(model, "classifier"):
             for module in model.classifier.modules():
                 if isinstance(module, nn.Linear):

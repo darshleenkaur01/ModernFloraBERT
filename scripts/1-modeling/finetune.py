@@ -1,11 +1,6 @@
 """
-Fine-tuning the transformer model on the downstream gene expression prediction task.
-
-Manual training loop using ``accelerate``, mirroring the proven florabert-2
-notebook (gurveersinghvirk/florabert-2). Unlike the HF ``Trainer``, this loop
-only collects ``outputs.logits`` + ``labels`` during eval (no hidden states),
-so the GPU does not OOM accumulating ``(batch, seq_len, hidden_size)`` tensors
-in ``all_preds`` (which happened when ``output_hidden_states=True``).
+Fine-tuning the transformer model on the downstream gene expression prediction task
+using accelerate for manual train/eval loops.
 """
 import os
 import sys
@@ -28,12 +23,7 @@ TRAIN_DATA = "train.tsv"
 EVAL_DATA = "eval.tsv"
 TEST_DATA = "test.tsv"
 DEFAULT_MODEL = "roberta-pred-mean-pool"
-# Optional pickled sklearn preprocessor (e.g. Yeoh-Johnson). None = skip;
-# the default `transformation="log10"` path does not need it.
 PREPROCESSOR = None
-
-# Keys accepted by ModernBertForSequenceClassificationMeanPool.forward.
-# The tokenizer may also emit `token_type_ids`, which ModernBERT does not accept.
 MODEL_INPUT_KEYS = ("input_ids", "attention_mask", "position_ids", "labels")
 
 
@@ -64,7 +54,6 @@ def main():
         hyperparam_search_trials=10,
     )
 
-    # Apply model-name-specific defaults unless the user overrode them on the CLI
     if "--output-dir" not in sys.argv:
         args.output_dir = config.model_output_dir(args.model_name, "prediction-model")
     if "--tokenizer-dir" not in sys.argv:

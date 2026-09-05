@@ -22,9 +22,6 @@ PREPROCESSOR = None
 OUTPUT_DIR = config.output / "transformer"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Set before parsing so defaults depend on the model name:
-# The per-model default paths are applied in main() below.
-
 
 def load_model(args, settings):
     return tr.load_model(
@@ -101,7 +98,6 @@ def main():
         transformation="log10",
     )
 
-    # Apply model-name-specific defaults unless the user overrode them on the CLI
     if "--tokenizer-dir" not in sys.argv:
         args.tokenizer_dir = config.tokenizer_dir_for_model(args.model_name)
     if "--pretrained-model" not in sys.argv:

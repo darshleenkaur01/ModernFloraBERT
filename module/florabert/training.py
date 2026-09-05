@@ -217,11 +217,8 @@ def make_optimizer_and_scheduler(
 ) -> tuple:
     """Create an ``(optimizer, scheduler)`` pair for manual training loops.
 
-    Builds the same optimizer/scheduler used by :func:`make_trainer` but returns
-    the pair directly (for use with ``accelerate``) instead of wiring it into a
-    HF ``Trainer``. When ``trainable_only`` is True only parameters with
-    ``requires_grad=True`` (e.g. an unfrozen task head) get optimizer state,
-    avoiding LAMB moments over a frozen base encoder.
+    When ``trainable_only`` is True only parameters with ``requires_grad=True``
+    get optimizer state, avoiding LAMB moments over a frozen base encoder.
     """
     optimizer_name = training_settings.get("optimizer", "lamb")
     scheduler_name = training_settings.get("scheduler", "constant")
@@ -313,11 +310,6 @@ def make_trainer(
         output_dir=str(output_dir),
         overwrite_output_dir=overwrite_output_dir,
         eval_strategy="steps",
-        # TODO: Figure out which setting for logging R2
-        # Skip accumulating eval logits on GPU when no custom metrics are
-        # requested (e.g. MLM pretrain). Accumulating full (batch, seq_len,
-        # vocab_size) logits across the eval set OOMs the GPU; with
-        # prediction_loss_only=True the eval loop returns loss only.
         prediction_loss_only=not bool(metrics),
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
@@ -330,8 +322,6 @@ def make_trainer(
         assert (
             scheduler is not None
         ), "If optimizer is not None, a scheduler must be supplied"
-        # TPU v3-8 exposes 8 logical devices even though `torch.cuda` reports 0;
-        # fall back to the CUDA device count on GPU machines and 1 otherwise.
         if os.environ.get("KAGGLE_TPU") or os.environ.get("TPU_NAME"):
             num_devices = 8
         else:
