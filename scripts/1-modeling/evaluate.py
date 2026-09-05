@@ -98,7 +98,7 @@ def main():
         model_name=DEFAULT_MODEL,
         log_offset=1,
         preprocessor=PREPROCESSOR,
-        transformation="log",
+        transformation="log10",
     )
 
     # Apply model-name-specific defaults unless the user overrode them on the CLI

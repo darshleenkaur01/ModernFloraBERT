@@ -29,7 +29,7 @@ EVAL_DATA = "eval.tsv"
 TEST_DATA = "test.tsv"
 DEFAULT_MODEL = "roberta-pred-mean-pool"
 # Optional pickled sklearn preprocessor (e.g. Yeoh-Johnson). None = skip;
-# the default `transformation="log"` path does not need it.
+# the default `transformation="log10"` path does not need it.
 PREPROCESSOR = None
 
 # Keys accepted by ModernBertForSequenceClassificationMeanPool.forward.
@@ -59,7 +59,7 @@ def main():
         model_name=DEFAULT_MODEL,
         log_offset=1,
         preprocessor=PREPROCESSOR,
-        transformation="log",
+        transformation="log10",
         hyperparam_search_metrics="mse",
         hyperparam_search_trials=10,
     )
